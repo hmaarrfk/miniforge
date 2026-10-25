@@ -74,3 +74,48 @@ jobs:
           "
           cmd.exe //c "$(cygpath -w "$HOME/mf/condabin/conda.bat") init --all"
           echo "init exit after workaround=$?"
+
+  candidate:
+    name: candidate ${{ matrix.fix }}
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        fix: [offline-reinstall, json-repair]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Download and install 26.9.4-0
+        run: |
+          curl -fsSL -o mf.exe "https://github.com/conda-forge/miniforge/releases/download/26.9.4-0/Miniforge3-26.9.4-0-Windows-x86_64.exe"
+          echo "start /wait \"\" mf.exe /InstallationType=JustMe /RegisterPython=0 /AddToPath=0 /S /D=$(cygpath -w "$HOME/mf")" > install.bat
+          cmd.exe //c install.bat
+          ls "$HOME/mf/pkgs" | grep -i launchers
+
+      - name: Apply offline-reinstall (installer env vars, no network)
+        if: matrix.fix == 'offline-reinstall'
+        run: |
+          set +e
+          CONDA_SAFETY_CHECKS=disabled CONDA_OFFLINE=true CONDA_PKGS_DIRS="$(cygpath -w "$HOME/mf/pkgs")" \
+            "$HOME/mf/python.exe" -m conda install -p "$(cygpath -w "$HOME/mf")" --offline --force-reinstall --no-deps -y conda-launchers
+          echo "exit=$?"
+          tail -5 "$HOME/mf/conda-meta/history"
+
+      - name: Apply json-repair
+        if: matrix.fix == 'json-repair'
+        run: |
+          "$HOME/mf/python.exe" -I -c "import glob, json, os, sys; [json.dump(dict(r, paths_data={'paths_version': 1, 'paths': json.load(open(os.path.join(r['extracted_package_dir'], 'info', 'paths.json')))['paths']}), open(m, 'w'), indent=2, sort_keys=True) for m in glob.glob(os.path.join(sys.prefix, 'conda-meta', 'conda-launchers-*.json')) for r in [json.load(open(m))] if not r['paths_data']['paths']]"
+
+      - name: Check
+        run: |
+          "$HOME/mf/python.exe" -I -c "
+          import glob, json, os
+          f = glob.glob(os.path.expanduser('~/mf/conda-meta/conda-launchers-*.json'))[0]
+          d = json.load(open(f)); print(f, d['channel'], len(d['paths_data']['paths'])); print(json.dumps(d['paths_data']['paths'][:2], indent=1))
+          "
+          cmd.exe //c "$(cygpath -w "$HOME/mf/condabin/conda.bat") init --all --dry-run"
+          cmd.exe //c "$(cygpath -w "$HOME/mf/condabin/conda.bat") init --all"
+          cmd.exe //c "$(cygpath -w "$HOME/mf/condabin/conda.bat") create -n t -y -q pytest"
+          ls "$HOME/mf/envs/t/Scripts/" | grep -i pytest
+          cmd.exe //c "$(cygpath -w "$HOME/mf/condabin/conda.bat") list -n base conda-launchers"
