@@ -1,0 +1,76 @@
+name: repro-913
+on:
+  push:
+    branches:
+      - repro-913
+  workflow_dispatch:
+
+jobs:
+  repro:
+    name: ${{ matrix.version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025]
+        version: ["26.9.4-0", "26.7.2-1"]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Download and install
+        run: |
+          curl -fsSL -o mf.exe "https://github.com/conda-forge/miniforge/releases/download/${{ matrix.version }}/Miniforge3-${{ matrix.version }}-Windows-x86_64.exe"
+          echo "start /wait \"\" mf.exe /InstallationType=JustMe /RegisterPython=0 /AddToPath=0 /S /D=$(cygpath -w "$HOME/mf")" > install.bat
+          cmd.exe //c install.bat
+          ls "$HOME/mf"
+
+      - name: Inspect conda-meta paths_data
+        run: |
+          "$HOME/mf/python.exe" -I -c "
+          import glob, json, os
+          empty = []; total = 0
+          for f in sorted(glob.glob(os.path.expanduser('~/mf/conda-meta/*.json'))):
+              d = json.load(open(f)); total += 1
+              n_files = len(d.get('files', []))
+              n_paths = len((d.get('paths_data') or {}).get('paths', []))
+              if n_files and n_paths < n_files:
+                  empty.append((d['name'], n_files, n_paths))
+              if d['name'] in ('conda-launchers', 'conda', 'conda-standalone'):
+                  print(d['name'], d['version'], d['build'], 'files=', n_files, 'paths_data=', n_paths)
+          print(f'{len(empty)}/{total} records have fewer paths_data entries than files:')
+          for e in empty: print('  ', *e)
+          "
+          echo "--- installer conda-exe:"
+          "$HOME/mf/_conda.exe" --version || true
+          head -c 600 "$HOME/mf/conda-meta/history" || true
+
+      - name: conda init --all --dry-run (non-mutating)
+        run: |
+          set +e
+          cmd.exe //c "$(cygpath -w "$HOME/mf/condabin/conda.bat") init --all --dry-run -v"
+          echo "exit=$?"
+
+      - name: conda init --all
+        run: |
+          set +e
+          cmd.exe //c "$(cygpath -w "$HOME/mf/condabin/conda.bat") init --all -v"
+          echo "exit=$?" | tee init_exit.txt
+
+      - name: conda create with entry points
+        run: |
+          set +e
+          cmd.exe //c "$(cygpath -w "$HOME/mf/condabin/conda.bat") create -n t -y -q pytest"
+          echo "exit=$?"
+
+      - name: Workaround - force-reinstall conda-launchers with safety checks on
+        run: |
+          set +e
+          CONDA_SAFETY_CHECKS=warn cmd.exe //c "$(cygpath -w "$HOME/mf/condabin/conda.bat") install -n base --force-reinstall -y -q conda-launchers"
+          "$HOME/mf/python.exe" -I -c "
+          import glob, json, os
+          f = glob.glob(os.path.expanduser('~/mf/conda-meta/conda-launchers-*.json'))[0]
+          print(f, len(json.load(open(f))['paths_data']['paths']))
+          "
+          cmd.exe //c "$(cygpath -w "$HOME/mf/condabin/conda.bat") init --all"
+          echo "init exit after workaround=$?"
